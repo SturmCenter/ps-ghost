@@ -10,6 +10,7 @@ const messages = {
     notFound: 'Not Found.',
     offerNotFound: 'This offer does not exist.',
     offerArchived: 'This offer is archived.',
+    tierNotFound: 'This tier does not exist.',
     tierArchived: 'This tier is archived.',
     existingSubscription: 'A subscription exists for this Member.',
     unableToCheckout: 'Unable to initiate checkout session',
@@ -258,9 +259,22 @@ module.exports = class RouterController {
 
             tier = await this._tiersService.api.read(offer.tier.id);
             cadence = offer.cadence;
-        } else {
+        } else if (tierId) {
             offer = null;
-            tier = await this._tiersService.api.read(tierId);
+
+            try {
+                // If the tierId is not a valid ID, the following line will throw
+                tier = await this._tiersService.api.read(tierId);
+
+                if (!tier) {
+                    throw undefined;
+                }
+            } catch (err) {
+                throw new BadRequestError({
+                    message: tpl(messages.tierNotFound),
+                    context: 'Tier with id "' + tierId + '" not found'
+                });
+            }
         }
 
         if (tier.status === 'archived') {
@@ -456,7 +470,7 @@ module.exports = class RouterController {
     }
 
     async sendMagicLink(req, res) {
-        const {email, autoRedirect} = req.body;
+        const {email, honeypot, autoRedirect} = req.body;
         let {emailType, redirect} = req.body;
 
         let referer = req.get('referer');
@@ -476,6 +490,15 @@ module.exports = class RouterController {
             throw new errors.BadRequestError({
                 message: tpl(messages.emailRequired)
             });
+        }
+
+        if (honeypot) {
+            logging.warn('Honeypot field filled, this is likely a bot');
+
+            // Honeypot field is filled, this is a bot.
+            // Pretend that the email was sent successfully.
+            res.writeHead(201);
+            return res.end('Created.');
         }
 
         if (!emailType) {

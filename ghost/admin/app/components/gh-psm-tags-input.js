@@ -49,11 +49,19 @@ export default class GhPsmTagsInput extends Component {
     @action
     updateTags(newTags) {
         let currentTags = this.get('post.tags');
+        let postFeatured = this.get('post.featured');
+        let input = this;
 
         // destroy new+unsaved tags that are no longer selected
         currentTags.forEach(function (tag) {
             if (!newTags.includes(tag) && tag.get('isNew')) {
                 tag.destroyRecord();
+            }
+        });
+        newTags.forEach(function (tag) {
+            const tagFeatured = tag.codeinjectionHead === "<!-- autofeature -->";
+            if (!currentTags.includes(tag) && tagFeatured && !postFeatured) {
+                input.set('post.featured', true);
             }
         });
 

@@ -83,6 +83,28 @@ export function decoratePostSearchResult(item, settings) {
     }
 }
 
+/**
+ * Fetches the URLs of all active offers
+ * @returns {Promise<{label: string, value: string}[]>}
+ */
+export async function offerUrls() {
+    let offers = [];
+
+    try {
+        offers = await this.fetchOffersTask.perform();
+    } catch (e) {
+        // No-op: if offers are not available (e.g. missing permissions), return an empty array
+        return [];
+    }
+
+    return offers.map((offer) => {
+        return {
+            label: `Offer — ${offer.name}`,
+            value: this.config.getSiteUrl(offer.code)
+        };
+    });
+}
+
 class ErrorHandler extends React.Component {
     state = {
         hasError: false
@@ -226,7 +248,7 @@ export default class KoenigLexicalEditor extends Component {
         // don't rethrow, Lexical will attempt to gracefully recover
     }
 
-    @task({restartable: true})
+    @task({restartable: false})
     *fetchOffersTask() {
         if (this.offers) {
             return this.offers;
@@ -235,7 +257,7 @@ export default class KoenigLexicalEditor extends Component {
         return this.offers;
     }
 
-    @task({restartable: true})
+    @task({restartable: false})
     *fetchLabelsTask() {
         if (this.labels) {
             return this.labels;
@@ -273,18 +295,6 @@ export default class KoenigLexicalEditor extends Component {
         };
 
         const fetchAutocompleteLinks = async () => {
-            let offers = [];
-            try {
-                offers = await this.fetchOffersTask.perform();
-            } catch (e) {
-                // Do not throw cancellation errors
-                if (didCancel(e)) {
-                    return;
-                }
-
-                throw e;
-            }
-
             const defaults = [
                 {label: 'Homepage', value: window.location.origin + '/'},
                 {label: 'Free signup', value: '#/portal/signup/free'}
@@ -310,7 +320,7 @@ export default class KoenigLexicalEditor extends Component {
             const donationLink = () => {
                 if (this.feature.tipsAndDonations && this.settings.donationsEnabled) {
                     return [{
-                        label: 'Tip or donation',
+                        label: 'Tips and donations',
                         value: '#/portal/support'
                     }];
                 }
@@ -329,12 +339,7 @@ export default class KoenigLexicalEditor extends Component {
                 return [];
             };
 
-            const offersLinks = offers.toArray().map((offer) => {
-                return {
-                    label: `Offer - ${offer.name}`,
-                    value: this.config.getSiteUrl(offer.code)
-                };
-            });
+            const offersLinks = await offerUrls.call(this);
 
             return [...defaults, ...memberLinks(), ...donationLink(), ...recommendationLink(), ...offersLinks];
         };
@@ -436,6 +441,16 @@ export default class KoenigLexicalEditor extends Component {
             }
         };
 
+        const checkStripeEnabled = () => {
+            const hasDirectKeys = !!(this.settings.stripeSecretKey && this.settings.stripePublishableKey);
+            const hasConnectKeys = !!(this.settings.stripeConnectSecretKey && this.settings.stripeConnectPublishableKey);
+
+            if (this.config.stripeDirect) {
+                return hasDirectKeys;
+            }
+            return hasDirectKeys || hasConnectKeys;
+        };
+
         const defaultCardConfig = {
             unsplash: this.settings.unsplash ? unsplashConfig.defaultHeaders : null,
             tenor: this.config.tenor?.googleApiKey ? this.config.tenor : null,
@@ -443,11 +458,10 @@ export default class KoenigLexicalEditor extends Component {
             fetchCollectionPosts,
             fetchEmbed,
             fetchLabels,
+            renderLabels: !this.session.user.isContributor,
             feature: {
                 collectionsCard: this.feature.collectionsCard,
                 collections: this.feature.collections,
-                internalLinking: this.feature.internalLinking,
-                internalLinkingAtLinks: this.feature.internalLinking,
                 contentVisibility: this.feature.contentVisibility
             },
             deprecated: { // todo fix typo
@@ -456,7 +470,9 @@ export default class KoenigLexicalEditor extends Component {
             membersEnabled: this.settings.membersSignupAccess === 'all',
             searchLinks,
             siteTitle: this.settings.title,
-            siteDescription: this.settings.description
+            siteDescription: this.settings.description,
+            siteUrl: this.config.getSiteUrl('/'),
+            stripeEnabled: checkStripeEnabled() // returns a boolean
         };
         const cardConfig = Object.assign({}, defaultCardConfig, props.cardConfig, {pinturaConfig: this.pinturaConfig});
 
@@ -662,34 +678,43 @@ export default class KoenigLexicalEditor extends Component {
         const multiplayerDocId = cardConfig.post.id;
         const multiplayerUsername = this.session.user.name;
 
+        const KGEditorComponent = ({isInitInstance}) => {
+            return (
+                <div data-secondary-instance={isInitInstance ? true : false} style={isInitInstance ? {display: 'none'} : {}}>
+                    <KoenigComposer
+                        editorResource={this.editorResource}
+                        cardConfig={cardConfig}
+                        enableMultiplayer={enableMultiplayer}
+                        fileUploader={{useFileUpload, fileTypes}}
+                        initialEditorState={this.args.lexical}
+                        multiplayerUsername={multiplayerUsername}
+                        multiplayerDocId={multiplayerDocId}
+                        multiplayerEndpoint={multiplayerEndpoint}
+                        onError={this.onError}
+                        darkMode={this.feature.nightShift}
+                        isTKEnabled={true}
+                    >
+                        <KoenigEditor
+                            editorResource={this.editorResource}
+                            cursorDidExitAtTop={isInitInstance ? null : this.args.cursorDidExitAtTop}
+                            placeholderText={isInitInstance ? null : this.args.placeholderText}
+                            darkMode={isInitInstance ? null : this.feature.nightShift}
+                            onChange={isInitInstance ? this.args.updateSecondaryInstanceModel : this.args.onChange}
+                            registerAPI={isInitInstance ? this.args.registerSecondaryAPI : this.args.registerAPI}
+                        />
+                        <WordCountPlugin editorResource={this.editorResource} onChange={isInitInstance ? () => {} : this.args.updateWordCount} />
+                        <TKCountPlugin editorResource={this.editorResource} onChange={isInitInstance ? () => {} : this.args.updatePostTkCount} />
+                    </KoenigComposer>
+                </div>
+            );
+        };
+
         return (
             <div className={['koenig-react-editor', 'koenig-lexical', this.args.className].filter(Boolean).join(' ')}>
                 <ErrorHandler config={this.config}>
                     <Suspense fallback={<p className="koenig-react-editor-loading">Loading editor...</p>}>
-                        <KoenigComposer
-                            editorResource={this.editorResource}
-                            cardConfig={cardConfig}
-                            enableMultiplayer={enableMultiplayer}
-                            fileUploader={{useFileUpload, fileTypes}}
-                            initialEditorState={this.args.lexical}
-                            multiplayerUsername={multiplayerUsername}
-                            multiplayerDocId={multiplayerDocId}
-                            multiplayerEndpoint={multiplayerEndpoint}
-                            onError={this.onError}
-                            darkMode={this.feature.nightShift}
-                            isTKEnabled={true}
-                        >
-                            <KoenigEditor
-                                editorResource={this.editorResource}
-                                cursorDidExitAtTop={this.args.cursorDidExitAtTop}
-                                placeholderText={this.args.placeholder}
-                                darkMode={this.feature.nightShift}
-                                onChange={this.args.onChange}
-                                registerAPI={this.args.registerAPI}
-                            />
-                            <WordCountPlugin editorResource={this.editorResource} onChange={this.args.updateWordCount} />
-                            <TKCountPlugin editorResource={this.editorResource} onChange={this.args.updatePostTkCount} />
-                        </KoenigComposer>
+                        <KGEditorComponent />
+                        <KGEditorComponent isInitInstance={true} />
                     </Suspense>
                 </ErrorHandler>
             </div>
